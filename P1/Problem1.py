@@ -50,16 +50,27 @@ def F_residual(u: jnp.ndarray, constant_values: float=1.0) -> jnp.ndarray:
 # Jacobian  J(u) = dF/du = Δ_h − diag(4u³)
 # ──────────────────────────────────────────────────────────────────────────────
 
-@partial(jit, static_argnames=('constant_values',))
-def J_matvec(u: jnp.ndarray, v: jnp.ndarray, constant_values: float=1.0) -> jnp.ndarray:
+@partial(jit, static_argnames=('check',))
+def J_matvec(u: jnp.ndarray, v: jnp.ndarray,check=False) -> jnp.ndarray:
     """
     Matrix-vector product J(u)·v without forming the full Jacobian.
 
     J(u) = Δ_h − diag(4u³).  The perturbation v is a direction in the
     interior, so boundary perturbations are zero (bc = 0).
+    u: (N, N) interior solution array.
+    v: (N, N) perturbation direction.
+
+    Returns:
+        J(u)·v: (N, N) array. Should be close to the result of forming the full Jacobian and multiplying by v:
+        jnp.reshape(get_jacobian_matrix(u) @ v.reshape(-1), u.shape)
+
     """
     lap_v = Laplace_5(v, constant_values=0.0)
-    return lap_v - 4.0 * u**3 * v
+    J_matvec_=lap_v - 4.0 * u**3 * v
+    if check:
+        J_matvec_full=jnp.reshape(get_jacobian_matrix(u) @ v.reshape(-1), u.shape)
+        jax.debug.print('Close check: max abs difference = {}',jnp.max(jnp.abs(J_matvec_ - J_matvec_full)))
+    return J_matvec_
 
 
 @jit
@@ -173,12 +184,11 @@ class PS4_Problem1:
     def __init__(self, N: int = 64):
         assert N > 1, "N must be greater than 1."
         self.N = N
-        self.h = 1.0 / (N + 1)
+        self.h = 1.0 / N
         # Interior coordinates:  h, 2h, …, Nh  ∈ (0, 1)
-        self.x_coordinate = jnp.linspace(0.0, 1.0, N + 2)[1:-1]   # (N,)
+        self.x_coordinate = jnp.linspace(0.0, 1.0, N,endpoint=False)+self.h/2   # (N,)
         self.y_coordinate = self.x_coordinate
-        self.X, self.Y = jnp.meshgrid(self.x_coordinate, self.y_coordinate,
-                                       indexing='ij')
+        self.X, self.Y = jnp.meshgrid(self.x_coordinate, self.y_coordinate,indexing='ij')
         self.u0 = jnp.ones((N, N), dtype=jnp.float64)   # initial guess = bc = 1
         self.u_direct = None
         self.u_jacobi = None
@@ -199,7 +209,7 @@ class PS4_Problem1:
         u = self.u0
         for k in range(max_iter):
             f_vec  = F_residual(u).reshape(-1)              # (N²,)
-            J_mat  = get_jacobian_matrix(u)                  # (N², N²)
+            J_mat  = get_jacobian_matrix(u)   # Full Jacobian matrix (dense), shape:  (N²,N²)                # (N², N²)
             delta_u = jnp.linalg.solve(J_mat, f_vec)        # (N²,)
             u = u - delta_u.reshape(self.N, self.N)
             res = float(jnp.max(jnp.abs(delta_u)))
